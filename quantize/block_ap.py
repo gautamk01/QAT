@@ -277,6 +277,8 @@ def block_ap(
                     # obtain output of quantization model
                     with torch.cuda.amp.autocast():
                         input = quant_inps.to(dev)
+                        if len(input.shape) == 2:
+                            input = input.unsqueeze(0)
                         label = fp_inps.to(dev)
                         quant_out = qlayer(
                             input, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
@@ -309,6 +311,8 @@ def block_ap(
                     with torch.no_grad():
                         with torch.cuda.amp.autocast():
                             input = quant_inps.to(dev)
+                            if len(input.shape) == 2:
+                                input = input.unsqueeze(0)
                             label = fp_inps.to(dev)
                             quant_out = qlayer(
                                 input, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
