@@ -16,11 +16,13 @@ def ampscaler_get_grad_norm(parameters, norm_type: float = 2.0) -> torch.Tensor:
         return torch.tensor(0.)
     device = parameters[0].grad.device
     if norm_type == inf:
-        total_norm = max(p.grad.detach().abs().max().to(device) for p in parameters)
+        total_norm = max(p.grad.detach().abs().max().to(device)
+                         for p in parameters)
     else:
         total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(),
                                                         norm_type).to(device) for p in parameters]), norm_type)
     return total_norm
+
 
 class NativeScalerWithGradNormCount:
     state_dict_key = "amp_scaler"
@@ -28,15 +30,16 @@ class NativeScalerWithGradNormCount:
     def __init__(self):
         self._scaler = torch.cuda.amp.GradScaler()
 
-    def __call__(self, loss, optimizer, clip_grad=None, parameters=None, create_graph=False, update_grad=True,retain_graph=False):
-        self._scaler.scale(loss).backward(create_graph=create_graph, retain_graph=retain_graph)
+    def __call__(self, loss, optimizer, clip_grad=None, parameters=None, create_graph=False, update_grad=True, retain_graph=False):
+        self._scaler.scale(loss).backward(
+            create_graph=create_graph, retain_graph=retain_graph)
         if update_grad:
+            # unscale the gradients of optimizer's assigned params in-place
+            self._scaler.unscale_(optimizer)
             if clip_grad is not None:
                 assert parameters is not None
-                self._scaler.unscale_(optimizer)  # unscale the gradients of optimizer's assigned params in-place
                 norm = torch.nn.utils.clip_grad_norm_(parameters, clip_grad)
             else:
-                self._scaler.unscale_(optimizer)
                 norm = ampscaler_get_grad_norm(parameters)
             self._scaler.step(optimizer)
             self._scaler.update()
@@ -60,7 +63,8 @@ def create_logger(output_dir, dist_rank=0, name=''):
     # create formatter
     fmt = '[%(asctime)s %(name)s] (%(filename)s %(lineno)d): %(levelname)s %(message)s'
     color_fmt = colored('[%(asctime)s %(name)s]', 'green') + \
-                colored('(%(filename)s %(lineno)d)', 'yellow') + ': %(levelname)s %(message)s'
+        colored('(%(filename)s %(lineno)d)', 'yellow') + \
+        ': %(levelname)s %(message)s'
 
     # create console handlers for master process
     if dist_rank == 0:
@@ -71,9 +75,11 @@ def create_logger(output_dir, dist_rank=0, name=''):
         logger.addHandler(console_handler)
 
     # create file handlers
-    file_handler = logging.FileHandler(os.path.join(output_dir, f'log_rank{dist_rank}_{int(time.time())}.txt'), mode='a')
+    file_handler = logging.FileHandler(os.path.join(
+        output_dir, f'log_rank{dist_rank}_{int(time.time())}.txt'), mode='a')
     file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(logging.Formatter(fmt=fmt, datefmt='%Y-%m-%d %H:%M:%S'))
+    file_handler.setFormatter(logging.Formatter(
+        fmt=fmt, datefmt='%Y-%m-%d %H:%M:%S'))
     logger.addHandler(file_handler)
 
     return logger

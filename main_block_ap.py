@@ -123,6 +123,8 @@ def main():
                         help="Path to the sensitivity results file (JSON)")
     parser.add_argument("--adaptive_lr_scaling", action="store_true",
                         help="Scale learning rates based on layer sensitivity")
+    parser.add_argument("--debug_block", type=int, default=None,
+                        help="Debug a single block instead of the whole model for faster validation.")
 
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
     args = parser.parse_args()
