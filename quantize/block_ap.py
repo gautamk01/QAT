@@ -220,6 +220,9 @@ def block_ap(
 
         qlayer.to(dev)
 
+        # Ensure the model is in float32 for training, to avoid issues with GradScaler
+        qlayer.float()
+
         # step 7.2: use the pre-calculated FP outputs as ground truth
         fp_train_outs = fp_train_inps
         fp_val_outs = fp_val_inps
@@ -234,8 +237,8 @@ def block_ap(
             total_training_iteration = args.epochs * args.train_size / args.batch_size
             if args.quant_lr > 0:
                 set_quant_parameters(qlayer, True)
-                param.append({"params": quant_parameters(
-                    qlayer), "lr": args.quant_lr})
+                param.append({"params": [p.float() for p in quant_parameters(
+                    qlayer)], "lr": args.quant_lr})
                 empty_optimizer_1 = torch.optim.AdamW(
                     [torch.tensor(0)], lr=args.quant_lr)
                 quant_scheduler = CosineAnnealingLR(
@@ -264,8 +267,8 @@ def block_ap(
                 else:
                     scaled_weight_lr = args.weight_lr
 
-                param.append({"params": weight_parameters(
-                    qlayer), "lr": scaled_weight_lr})
+                param.append({"params": [p.float() for p in weight_parameters(
+                    qlayer)], "lr": scaled_weight_lr})
                 empty_optimizer_2 = torch.optim.AdamW(
                     [torch.tensor(0)], lr=scaled_weight_lr)
                 weight_scheduler = CosineAnnealingLR(
@@ -305,8 +308,11 @@ def block_ap(
                         pdb.set_trace()
                     loss_list.append(reconstruction_loss.detach().cpu())
                     optimizer.zero_grad()
-                    norm = loss_scaler(loss, optimizer, parameters=trainable_parameters(
-                        qlayer), clip_grad=args.clip_grad).cpu()
+                    # Ensure parameters passed to loss_scaler are float32
+                    trainable_params_float32 = [
+                        p.float() for p in trainable_parameters(qlayer)]
+                    norm = loss_scaler(loss, optimizer, parameters=trainable_params_float32,
+                                       clip_grad=args.clip_grad).cpu()
                     norm_list.append(norm.data)
 
                     # adjust lr
