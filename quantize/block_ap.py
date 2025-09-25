@@ -163,51 +163,7 @@ def block_ap(
         for index, data in enumerate(fp_val_inps):
             quant_val_inps.update_data(index, data)
 
-    # step 6: Pre-calculate all full-precision ground truths
-    fp_inps_list = [fp_train_inps, fp_val_inps]
-    # Pre-allocate the lists with placeholders
-    fp_outs_list = [[None for _ in range(len(layers))], [
-        None for _ in range(len(layers))]]
-
-    with torch.no_grad():
-        # Fast-track validation: only pre-calculate up to the debug block
-        loop_range = range(len(layers)) if args.debug_block is None else range(
-            args.debug_block + 1)
-        for i in loop_range:
-            logger.info(f"Pre-calculating ground truth for block {i}")
-            layer = layers[i].to(dev)
-
-            current_fp_train_inps = fp_inps_list[0]
-            current_fp_val_inps = fp_inps_list[1]
-
-            # Store the INPUTS of the current layer as the GROUND TRUTH for the PREVIOUS layer's training
-            if i > 0:
-                fp_outs_list[0][i-1] = current_fp_train_inps
-                fp_outs_list[1][i-1] = current_fp_val_inps
-
-            # Calculate the OUTPUTS of the current layer to be the INPUTS for the NEXT layer
-            next_fp_train_inps = BlockTrainDataset(
-                args.train_size, args.training_seqlen, model.config.hidden_size, args.batch_size, dtype, off_load_to_disk=args.off_load_to_disk)
-            next_fp_val_inps = BlockTrainDataset(
-                args.val_size, args.training_seqlen, model.config.hidden_size, args.batch_size, dtype, off_load_to_disk=args.off_load_to_disk)
-
-            update_dataset(layer, next_fp_train_inps,
-                           dev, attention_mask, position_ids)
-            update_dataset(layer, next_fp_val_inps, dev,
-                           attention_mask, position_ids)
-
-            # The new input is the output of the current layer
-            fp_inps_list = [next_fp_train_inps, next_fp_val_inps]
-
-            # Store the final layer's output as its own ground truth
-            if i == len(layers) - 1:
-                fp_outs_list[0][i] = fp_inps_list[0]
-                fp_outs_list[1][i] = fp_inps_list[1]
-
-            layer.cpu()
-            torch.cuda.empty_cache()
-
-    # step 7: start training
+    # step 6: start training
     loss_func = torch.nn.MSELoss()
 
     # NEW: Sensitivity-based layer ordering
@@ -265,8 +221,8 @@ def block_ap(
         qlayer.to(dev)
 
         # step 7.2: use the pre-calculated FP outputs as ground truth
-        fp_train_outs = fp_outs_list[0][block_index]
-        fp_val_outs = fp_outs_list[1][block_index]
+        fp_train_outs = fp_train_inps
+        fp_val_outs = fp_val_inps
 
         set_quant_state(qlayer, weight_quant=True)  # activate quantization
 
@@ -299,9 +255,12 @@ def block_ap(
                     normalized_sensitivity = 0.5 + \
                         (sensitivity_scores[block_index] -
                          min_s) / (max_s - min_s + 1e-8)
-                    scaled_weight_lr = args.weight_lr * normalized_sensitivity
+                    # Clamp the scaling factor to a safe range, e.g., [0.5, 2.0]
+                    lr_scale_factor = torch.clamp(
+                        normalized_sensitivity, 0.5, 2.0)
+                    scaled_weight_lr = args.weight_lr * lr_scale_factor
                     logger.info(
-                        f"Block {block_index} sensitivity: {sensitivity_scores[block_index]:.4f}, LR scale: {normalized_sensitivity:.2f}, Scaled LR: {scaled_weight_lr:.2e}")
+                        f"Block {block_index} sensitivity: {sensitivity_scores[block_index]:.4f}, LR scale: {lr_scale_factor:.2f}, Scaled LR: {scaled_weight_lr:.2e}")
                 else:
                     scaled_weight_lr = args.weight_lr
 
@@ -328,25 +287,26 @@ def block_ap(
                 loss_list = []
                 norm_list = []
                 start_time = time.time()
-                for index, (quant_inps, fp_outs) in enumerate(zip(quant_train_inps, fp_train_outs)):
+                for index, (quant_inps, fp_inps) in enumerate(zip(quant_train_inps, fp_train_inps)):
                     # obtain output of quantization model
-                    # with torch.cuda.amp.autocast():  # DISABLED FOR STABILITY
-                    input = quant_inps.to(dev).half()
-                    if len(input.shape) == 2:
-                        input = input.unsqueeze(0)
-                    label = fp_outs.to(dev).half()
-                    quant_out = qlayer(
-                        input, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
-                    reconstruction_loss = loss_func(label, quant_out)
-                    loss = reconstruction_loss
+                    with torch.cuda.amp.autocast():
+                        input = quant_inps.to(dev)
+                        label = fp_inps.to(dev)
+                        with torch.no_grad():
+                            fp_out = layer(
+                                label, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
+                        quant_out = qlayer(
+                            input, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
+                        reconstruction_loss = loss_func(fp_out, quant_out)
+                        loss = reconstruction_loss
 
                     if not math.isfinite(loss.item()):
                         logger.info("Loss is NAN, stopping training")
                         pdb.set_trace()
                     loss_list.append(reconstruction_loss.detach().cpu())
                     optimizer.zero_grad()
-                    norm = loss_scaler(
-                        loss, optimizer, parameters=trainable_parameters(qlayer), clip_grad=args.clip_grad).cpu()
+                    norm = loss_scaler(loss, optimizer, parameters=trainable_parameters(
+                        qlayer), clip_grad=args.clip_grad).cpu()
                     norm_list.append(norm.data)
 
                     # adjust lr
@@ -361,17 +321,18 @@ def block_ap(
 
                 # step 6.5: calculate validation loss
                 val_loss_list = []
-                for index, (quant_inps, fp_outs) in enumerate(zip(quant_val_inps, fp_val_outs)):
+                for index, (quant_inps, fp_inps) in enumerate(zip(quant_val_inps, fp_val_inps)):
                     # obtain output of quantization model
                     with torch.no_grad():
-                        # with torch.cuda.amp.autocast():  # DISABLED FOR STABILITY
-                        input = quant_inps.to(dev).half()
-                        if len(input.shape) == 2:
-                            input = input.unsqueeze(0)
-                        label = fp_outs.to(dev).half()
-                        quant_out = qlayer(
-                            input, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
-                        reconstruction_loss = loss_func(label, quant_out)
+                        with torch.cuda.amp.autocast():
+                            input = quant_inps.to(dev)
+                            label = fp_inps.to(dev)
+                            with torch.no_grad():
+                                fp_out = layer(
+                                    label, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
+                            quant_out = qlayer(
+                                input, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
+                            reconstruction_loss = loss_func(fp_out, quant_out)
                     val_loss_list.append(reconstruction_loss.cpu())
 
                 # calculate the average training loss of last train_mean_num samples
