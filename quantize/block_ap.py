@@ -21,16 +21,24 @@ import os
 import json
 
 
-def update_dataset(layer, dataset, dev, attention_mask, position_ids):
-    with torch.no_grad():
-        with torch.cuda.amp.autocast():
-            for index, inps in enumerate(dataset):
-                inps = inps.to(dev)
-                if len(inps.shape) == 2:
-                    inps = inps.unsqueeze(0)
-                new_data = layer(inps, attention_mask=attention_mask,
-                                 position_ids=position_ids)[0].to('cpu')
-                dataset.update_data(index, new_data)
+@torch.no_grad()
+def build_block_inputs(model, base_dataset, block_idx, device, attention_mask=None, position_ids=None):
+    """
+    base_dataset: iterable or dataset of tensors at entry-of-layer-0 (CPU)
+    returns: a dataset/list of inputs for block `block_idx` (CPU tensors)
+    """
+    layers = model.model.layers
+    out_list = []
+    for inps in base_dataset:
+        x = inps.to(device)
+        if x.dim() == 2:
+            x = x.unsqueeze(0)
+        # forward through prefix [0..block_idx-1] using current model state
+        for j in range(block_idx):
+            x = layers[j].to(device)(
+                x, attention_mask=attention_mask, position_ids=position_ids)[0]
+        out_list.append(x.detach().cpu())
+    return out_list
 
 
 def block_ap(
@@ -203,7 +211,7 @@ def block_ap(
         logger.info(
             f"=== Training block {block_index} (order {i+1}/{len(layers)}) ===")
         # step 6.1: replace torch.nn.Linear with QuantLinear for QAT
-        layer = layers[block_index].to(dev)
+        layer = layers[block_index]
         qlayer = copy.deepcopy(layer)
         # 1. Replace all nn.Linear layers with QuantLinear
         for name, module in qlayer.named_modules():
@@ -218,23 +226,37 @@ def block_ap(
             if isinstance(module, int_linear_fake.QuantLinear):
                 module.init_quant_params()
 
-        qlayer.to(dev)
+        # CRITICAL: Cast layer to float32 BEFORE optimizer creation
+        qlayer = qlayer.float().to(dev)
+        assert all(p.dtype == torch.float32 for p in trainable_parameters(
+            qlayer)), "Trainable params must be FP32 before optimizer creation"
 
-        # CRITICAL: Cast layer to float32 BEFORE optimizer creation to ensure all trainable parameters are FP32.
-        qlayer.float()
+        # step 7.2: Recompute inputs and teacher outputs for the current block
+        logger.info(f"Building inputs for block {block_index}...")
+        quant_train_inps_k = build_block_inputs(
+            model, fp_train_inps, block_index, dev, attention_mask_batch, position_ids)
+        quant_val_inps_k = build_block_inputs(
+            model, fp_val_inps, block_index, dev, attention_mask_batch, position_ids)
 
-        # step 7.2: use the pre-calculated FP outputs as ground truth
-        fp_train_outs = fp_train_inps
-        fp_val_outs = fp_val_inps
+        # Compute FP teacher outputs for the same inputs
+        fp_train_outs_k = []
+        with torch.no_grad():
+            layer_fp = layers[block_index].to(dev).float()
+            for q_in in quant_train_inps_k:
+                xin = q_in.to(dev)
+                fp_out = layer_fp(
+                    xin, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
+                fp_train_outs_k.append(fp_out.detach().cpu())
 
-        set_quant_state(qlayer, weight_quant=True)  # activate quantization
+        set_quant_state(qlayer, weight_quant=True)
 
         if args.epochs > 0:
             # step 6.3: create optimizer and learning rate schedule
             param = []
             assert args.quant_lr > 0 or args.weight_lr > 0
             param_group_index = 0
-            total_training_iteration = args.epochs * args.train_size / args.batch_size
+            total_training_iteration = len(
+                quant_train_inps_k) * args.epochs
             if args.quant_lr > 0:
                 set_quant_parameters(qlayer, True)
                 param.append({"params": quant_parameters(
@@ -250,15 +272,12 @@ def block_ap(
 
             if args.weight_lr > 0:
                 set_weight_parameters(qlayer, True)
-                # Optional: Adaptive learning rate scaling
                 if args.adaptive_lr_scaling and args.layer_ordering == 'sensitivity':
-                    # Normalize sensitivity scores (e.g., to [0.5, 1.5])
                     min_s, max_s = torch.min(
                         sensitivity_scores), torch.max(sensitivity_scores)
                     normalized_sensitivity = 0.5 + \
                         (sensitivity_scores[block_index] -
                          min_s) / (max_s - min_s + 1e-8)
-                    # Clamp the scaling factor to a safe range, e.g., [0.5, 2.0]
                     lr_scale_factor = torch.clamp(
                         normalized_sensitivity, 0.5, 2.0)
                     scaled_weight_lr = args.weight_lr * lr_scale_factor
@@ -266,7 +285,6 @@ def block_ap(
                         f"Block {block_index} sensitivity: {sensitivity_scores[block_index]:.4f}, LR scale: {lr_scale_factor:.2f}, Scaled LR: {scaled_weight_lr:.2e}")
                 else:
                     scaled_weight_lr = args.weight_lr
-
                 param.append({"params": weight_parameters(
                     qlayer), "lr": scaled_weight_lr})
                 empty_optimizer_2 = torch.optim.AdamW(
@@ -277,41 +295,47 @@ def block_ap(
                 param_group_index += 1
             else:
                 set_weight_parameters(qlayer, False)
+
             optimizer = torch.optim.AdamW(param, weight_decay=args.wd)
-            # Re-initialize the scaler for each block to prevent state carry-over
-            loss_scaler = utils.NativeScalerWithGradNormCount()
             trainable_number = trainable_parameters_num(qlayer)
-            print(f"trainable parameter number: {trainable_number/1e6}M")
+            logger.info(
+                f"Trainable parameter number: {trainable_number/1e6:.2f}M")
 
             best_val_loss = 1e6
             early_stop_flag = 0
             for epoch in range(args.epochs):
-                # step: 6.4 training
                 loss_list = []
                 norm_list = []
                 start_time = time.time()
-                for index, (quant_inps, fp_inps) in enumerate(zip(quant_train_inps, fp_train_inps)):
-                    # obtain output of quantization model
-                    with torch.cuda.amp.autocast():
-                        input = quant_inps.to(dev)
-                        label = fp_inps.to(dev)
-                        with torch.no_grad():
-                            fp_out = layer(
-                                label, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
-                        quant_out = qlayer(
-                            input, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
-                        reconstruction_loss = loss_func(fp_out, quant_out)
-                        loss = reconstruction_loss
+                for index, (q_in_cpu, fp_out_cpu) in enumerate(zip(quant_train_inps_k, fp_train_outs_k)):
+                    optimizer.zero_grad(set_to_none=True)
+                    q_in = q_in_cpu.to(dev)
+                    fp_out = fp_out_cpu.to(dev)
+
+                    with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                        q_out = qlayer(
+                            q_in, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
+                        loss = F.mse_loss(q_out, fp_out)
 
                     if not math.isfinite(loss.item()):
                         logger.info("Loss is NAN, stopping training")
-                        pdb.set_trace()
-                    loss_list.append(reconstruction_loss.detach().cpu())
-                    optimizer.zero_grad()
-                    norm = loss_scaler(loss, optimizer, parameters=trainable_parameters(
-                        qlayer), clip_grad=args.clip_grad).cpu()
-                    norm_list.append(norm.data)
-                    # adjust lr
+                        # Add debug dump
+                        torch.save({
+                            "block_index": block_index,
+                            "q_in": q_in_cpu,
+                            "fp_out": fp_out_cpu,
+                            "qlayer_state": qlayer.state_dict()
+                        }, f"debug_block_{block_index}_nan.pth")
+                        raise RuntimeError(
+                            "NaN encountered during training — see debug dump")
+
+                    loss_list.append(loss.detach().cpu())
+                    loss.backward()
+                    norm = torch.nn.utils.clip_grad_norm_(
+                        trainable_parameters(qlayer), args.clip_grad)
+                    norm_list.append(norm.cpu())
+                    optimizer.step()
+
                     if args.quant_lr > 0:
                         quant_scheduler.step()
                         optimizer.param_groups[quant_index]['lr'] = quant_scheduler.get_lr()[
@@ -321,34 +345,40 @@ def block_ap(
                         optimizer.param_groups[weight_index]['lr'] = weight_scheduler.get_lr()[
                             0]
 
-                # step 6.5: calculate validation loss
+                # Validation loop
                 val_loss_list = []
-                for index, (quant_inps, fp_inps) in enumerate(zip(quant_val_inps, fp_val_inps)):
-                    # obtain output of quantization model
-                    with torch.no_grad():
-                        with torch.cuda.amp.autocast():
-                            input = quant_inps.to(dev)
-                            label = fp_inps.to(dev)
-                            with torch.no_grad():
-                                fp_out = layer(
-                                    label, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
-                            quant_out = qlayer(
-                                input, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
-                            reconstruction_loss = loss_func(fp_out, quant_out)
-                    val_loss_list.append(reconstruction_loss.cpu())
+                with torch.no_grad():
+                    # Compute FP teacher outputs for validation set
+                    fp_val_outs_k = []
+                    for q_in in quant_val_inps_k:
+                        xin = q_in.to(dev)
+                        fp_out = layer_fp(
+                            xin, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
+                        fp_val_outs_k.append(fp_out.detach().cpu())
 
-                # calculate the average training loss of last train_mean_num samples
-                train_mean_num = min(len(loss_list), 64)
-                loss_mean = torch.stack(loss_list)[-(train_mean_num-1):].mean()
+                    for index, (q_in_cpu, fp_out_cpu) in enumerate(zip(quant_val_inps_k, fp_val_outs_k)):
+                        q_in = q_in_cpu.to(dev)
+                        fp_out = fp_out_cpu.to(dev)
+                        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                            q_out = qlayer(
+                                q_in, attention_mask=attention_mask_batch, position_ids=position_ids)[0]
+                            reconstruction_loss = F.mse_loss(q_out, fp_out)
+                        val_loss_list.append(reconstruction_loss.cpu())
+
+                loss_mean = torch.stack(loss_list).mean()
                 val_loss_mean = torch.stack(val_loss_list).mean()
                 norm_mean = torch.stack(norm_list).mean()
                 logger.info(
-                    f"blocks {block_index} epoch {epoch} recon_loss:{loss_mean} val_loss:{val_loss_mean} quant_lr:{quant_scheduler.get_lr()[0]} norm:{norm_mean:.8f} max memory_allocated {torch.cuda.max_memory_allocated(dev) / 1024**2} time {time.time()-start_time} ")
+                    f"Block {block_index} | Epoch {epoch} | recon_loss: {loss_mean:.4f} | val_loss: {val_loss_mean:.4f} | quant_lr: {quant_scheduler.get_lr()[0]:.2e} | norm: {norm_mean:.4f} | time: {time.time()-start_time:.1f}s")
+
                 if val_loss_mean < best_val_loss:
                     best_val_loss = val_loss_mean
+                    early_stop_flag = 0
                 else:
                     early_stop_flag += 1
                     if args.early_stop > 0 and early_stop_flag >= args.early_stop:
+                        logger.info(
+                            f"Early stopping at epoch {epoch} for block {block_index}")
                         break
             optimizer.zero_grad()
             del optimizer
@@ -356,17 +386,10 @@ def block_ap(
         # step 6.6: directly replace the weight with fake quantization
         qlayer.half()
         quant_inplace(qlayer)
-        # weight has been quantized inplace
         set_quant_state(qlayer, weight_quant=False)
 
-        # step 7.7: update inputs of quantization model
-        if args.epochs > 0:
-            update_dataset(qlayer, quant_train_inps, dev,
-                           attention_mask, position_ids)
-            update_dataset(qlayer, quant_val_inps, dev,
-                           attention_mask, position_ids)
+        # Update the layer in the main model with the quantized version
         layers[block_index] = qlayer.to("cpu")
-
         # step 7: pack quantized weights into low-bits format, note that this process is slow on poor CPU or busy CPU
         if args.real_quant:
             named_linears = get_named_linears(
