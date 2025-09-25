@@ -220,6 +220,9 @@ def block_ap(
 
         qlayer.to(dev)
 
+        # CRITICAL: Cast layer to float32 BEFORE optimizer creation to ensure all trainable parameters are FP32.
+        qlayer.float()
+
         # step 7.2: use the pre-calculated FP outputs as ground truth
         fp_train_outs = fp_train_inps
         fp_val_outs = fp_val_inps
@@ -289,8 +292,6 @@ def block_ap(
                 start_time = time.time()
                 for index, (quant_inps, fp_inps) in enumerate(zip(quant_train_inps, fp_train_inps)):
                     # obtain output of quantization model
-                    # CRITICAL: Convert layer to float32 before the forward pass for training
-                    qlayer.float()
                     with torch.cuda.amp.autocast():
                         input = quant_inps.to(dev)
                         label = fp_inps.to(dev)
@@ -310,9 +311,6 @@ def block_ap(
                     norm = loss_scaler(loss, optimizer, parameters=trainable_parameters(
                         qlayer), clip_grad=args.clip_grad).cpu()
                     norm_list.append(norm.data)
-                    # CRITICAL: Convert layer back to half precision after optimizer step
-                    qlayer.half()
-
                     # adjust lr
                     if args.quant_lr > 0:
                         quant_scheduler.step()
