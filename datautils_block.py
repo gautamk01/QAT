@@ -10,6 +10,7 @@ import torch
 from torch.utils.data import Dataset
 import os
 
+
 def get_wikitext2(tokenizer, train_size, val_size, seed, seqlen, test_only):
     print("get_wikitext2")
     traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
@@ -20,12 +21,13 @@ def get_wikitext2(tokenizer, train_size, val_size, seed, seqlen, test_only):
         return testenc
     trainenc = tokenizer("\n\n".join(traindata['text']), return_tensors='pt')
 
-    
     random.seed(seed)
     trainloader = []
-    val_sample_ratio = 0.9  # sample train from [0:0.9] and val from [0.9:1.0] to avoid overlap
+    # sample train from [0:0.9] and val from [0.9:1.0] to avoid overlap
+    val_sample_ratio = 0.9
     for _ in range(train_size):
-        i = random.randint(0, int(trainenc.input_ids.shape[1]*val_sample_ratio) - seqlen - 1)
+        i = random.randint(
+            0, int(trainenc.input_ids.shape[1]*val_sample_ratio) - seqlen - 1)
         j = i + seqlen
         inp = trainenc.input_ids[:, i:j]
         tar = inp.clone()
@@ -33,7 +35,8 @@ def get_wikitext2(tokenizer, train_size, val_size, seed, seqlen, test_only):
         trainloader.append((inp, tar))
     valloader = []
     for _ in range(val_size):
-        i = random.randint(int(trainenc.input_ids.shape[1]*val_sample_ratio) - seqlen - 1, trainenc.input_ids.shape[1] - seqlen - 1)
+        i = random.randint(int(
+            trainenc.input_ids.shape[1]*val_sample_ratio) - seqlen - 1, trainenc.input_ids.shape[1] - seqlen - 1)
         j = i + seqlen
         inp = trainenc.input_ids[:, i:j]
         tar = inp.clone()
@@ -47,16 +50,16 @@ def get_c4(tokenizer, train_size, val_size, seed, seqlen, test_only):
     try:
         # set local path for faster loading
         traindata = load_dataset("arrow",
-                    data_files={
-                        "train": "/cpfs01/user/chenmengzhao/huggingface/datasets/allenai___json/allenai--c4-6fbe877195f42de5/0.0.0/0f7e3662623656454fcd2b650f34e886a7db4b9104504885bd462096cc7a9f51/json-train-00000-of-00002.arrow",
-                        "validation": "/cpfs01/user/chenmengzhao/huggingface/datasets/allenai___json/allenai--c4-efc3d4f4606f44bd/0.0.0/fe5dd6ea2639a6df622901539cb550cf8797e5a6b2dd7af1cf934bed8e233e6e/json-validation.arrow",
-                    },split='train'
-                    )
+                                 data_files={
+                                     "train": "/cpfs01/user/chenmengzhao/huggingface/datasets/allenai___json/allenai--c4-6fbe877195f42de5/0.0.0/0f7e3662623656454fcd2b650f34e886a7db4b9104504885bd462096cc7a9f51/json-train-00000-of-00002.arrow",
+                                     "validation": "/cpfs01/user/chenmengzhao/huggingface/datasets/allenai___json/allenai--c4-efc3d4f4606f44bd/0.0.0/fe5dd6ea2639a6df622901539cb550cf8797e5a6b2dd7af1cf934bed8e233e6e/json-validation.arrow",
+                                 }, split='train'
+                                 )
         valdata = load_dataset("arrow",
-                    data_files={
-                        "validation": "/cpfs01/user/chenmengzhao/huggingface/datasets/allenai___json/allenai--c4-efc3d4f4606f44bd/0.0.0/fe5dd6ea2639a6df622901539cb550cf8797e5a6b2dd7af1cf934bed8e233e6e/json-validation.arrow",
-                    },split='validation'
-                    )
+                               data_files={
+                                   "validation": "/cpfs01/user/chenmengzhao/huggingface/datasets/allenai___json/allenai--c4-efc3d4f4606f44bd/0.0.0/fe5dd6ea2639a6df622901539cb550cf8797e5a6b2dd7af1cf934bed8e233e6e/json-validation.arrow",
+                               }, split='validation'
+                               )
     except:
         traindata = load_dataset(
             'allenai/c4', 'allenai--c4', data_files={'train': 'en/c4-train.00000-of-01024.json.gz'}, split='train'
@@ -78,11 +81,12 @@ def get_c4(tokenizer, train_size, val_size, seed, seqlen, test_only):
         valenc.append(tmp.input_ids[:, i:j])
     valenc = torch.hstack(valenc)
     if test_only:
-        return valenc 
+        return valenc
 
     random.seed(seed)
     trainloader = []
-    val_sample_ratio = 0.9  # sample train from [0:0.9] and val from [0.9:1.0] to avoid overlap
+    # sample train from [0:0.9] and val from [0.9:1.0] to avoid overlap
+    val_sample_ratio = 0.9
     for _ in range(train_size):
         while True:
             i = random.randint(0, int(len(traindata)*val_sample_ratio) - 1)
@@ -95,11 +99,12 @@ def get_c4(tokenizer, train_size, val_size, seed, seqlen, test_only):
         tar = inp.clone()
         tar[:, :-1] = -100
         trainloader.append((inp, tar))
-    
+
     valloader = []
     for _ in range(val_size):
         while True:
-            i = random.randint(int(len(traindata)*val_sample_ratio),len(traindata)-1)
+            i = random.randint(
+                int(len(traindata)*val_sample_ratio), len(traindata)-1)
             trainenc = tokenizer(traindata[i]['text'], return_tensors='pt')
             if trainenc.input_ids.shape[1] >= seqlen+1:
                 break
@@ -110,19 +115,19 @@ def get_c4(tokenizer, train_size, val_size, seed, seqlen, test_only):
         tar[:, :-1] = -100
         valloader.append((inp, tar))
 
+    return trainloader, valloader
 
-
-    return trainloader, valloader 
 
 def get_redpajama(tokenizer, train_size, val_size, seed, seqlen):
     print("get_redpajama")
     try:
         loacal_dataset = "/cpfs01/user/chenmengzhao/huggingface/datasets/togethercomputer___red_pajama-data-1_t-sample"
-        traindata = load_dataset(loacal_dataset,split='train')   
+        traindata = load_dataset(loacal_dataset, split='train')
     except:
-        traindata = load_dataset("togethercomputer/RedPajama-Data-1T-Sample",split='train')   
+        traindata = load_dataset(
+            "togethercomputer/RedPajama-Data-1T-Sample", split='train')
     random.seed(seed)
-    traindata = traindata.shuffle(seed=seed) 
+    traindata = traindata.shuffle(seed=seed)
     trainloader = []
     val_sample_ratio = 0.9
     for _ in range(train_size):
@@ -141,7 +146,8 @@ def get_redpajama(tokenizer, train_size, val_size, seed, seqlen):
     valloader = []
     for _ in range(val_size):
         while True:
-            i = random.randint(int(len(traindata)*val_sample_ratio),len(traindata)-1)
+            i = random.randint(
+                int(len(traindata)*val_sample_ratio), len(traindata)-1)
             trainenc = tokenizer(traindata[i]['text'], return_tensors='pt')
             if trainenc.input_ids.shape[1] >= seqlen+1:
                 break
@@ -154,23 +160,21 @@ def get_redpajama(tokenizer, train_size, val_size, seed, seqlen):
     return trainloader, valloader
 
 
-
 def get_loaders(
-    name, tokenizer, train_size=128, val_size=64,seed=0, seqlen=2048, test_only=False
+    name, tokenizer, train_size=128, val_size=64, seed=0, seqlen=2048, test_only=False
 ):
     if 'wikitext2' in name:
-        return get_wikitext2(tokenizer,train_size,val_size,seed,seqlen,test_only)
+        return get_wikitext2(tokenizer, train_size, val_size, seed, seqlen, test_only)
     elif 'c4' in name:
-        return get_c4(tokenizer,train_size,val_size,seed,seqlen,test_only)
+        return get_c4(tokenizer, train_size, val_size, seed, seqlen, test_only)
     elif 'redpajama' in name:
-        return get_redpajama(tokenizer,train_size,val_size,seed,seqlen)
+        return get_redpajama(tokenizer, train_size, val_size, seed, seqlen)
     else:
         raise NotImplementedError
 
 
-
 @torch.no_grad()
-def test_ppl(model, tokenizer, datasets=['wikitext2'],ppl_seqlen=2048):
+def test_ppl(model, tokenizer, datasets=['wikitext2'], ppl_seqlen=2048):
     results = {}
     for dataset in datasets:
         testloader = get_loaders(
@@ -191,18 +195,19 @@ def test_ppl(model, tokenizer, datasets=['wikitext2'],ppl_seqlen=2048):
         model.config.use_cache = False
         model.eval()
         nlls = []
-        if hasattr(model,'lm_head') and isinstance(model.lm_head, nn.Linear):
+        if hasattr(model, 'lm_head') and isinstance(model.lm_head, nn.Linear):
             classifier = model.lm_head
-        elif hasattr(model.model,'lm_head'):
+        elif hasattr(model.model, 'lm_head'):
             # for gptqmodels
             classifier = None
-        elif hasattr(model,'output'):
+        elif hasattr(model, 'output'):
             # for internlm
             classifier = model.output
         else:
             raise NotImplementedError
         for i in tqdm(range(nsamples)):
-            batch = testenc[:, (i * seqlen) : ((i + 1) * seqlen)].to(model.device)
+            batch = testenc[:, (i * seqlen): ((i + 1) * seqlen)
+                            ].to(model.model.embed_tokens.weight.device)
             outputs = model.model(batch)
             if classifier is not None:
                 hidden_states = outputs[0]
@@ -210,7 +215,7 @@ def test_ppl(model, tokenizer, datasets=['wikitext2'],ppl_seqlen=2048):
             else:
                 logits = outputs[0]
             shift_logits = logits[:, :-1, :]
-            shift_labels = testenc[:, (i * seqlen) : ((i + 1) * seqlen)][
+            shift_labels = testenc[:, (i * seqlen): ((i + 1) * seqlen)][
                 :, 1:
             ].to(shift_logits.device)
             loss_fct = nn.CrossEntropyLoss()
@@ -221,12 +226,12 @@ def test_ppl(model, tokenizer, datasets=['wikitext2'],ppl_seqlen=2048):
             neg_log_likelihood = loss.float() * seqlen
             nlls.append(neg_log_likelihood)
 
-
         ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * seqlen))
         print(f'{dataset}:{ppl}')
         results[dataset] = ppl.item()
     model.config.use_cache = use_cache
     return results
+
 
 class BlockTrainDataset(Dataset):
     def __init__(self, size, seqlen, hidden_size, batch_size, dtype, cache_path='./cache/block_training_data', off_load_to_disk=False):
@@ -237,18 +242,20 @@ class BlockTrainDataset(Dataset):
         self.cache_path = cache_path
         self.off_load_to_disk = off_load_to_disk
         self.batch_size = batch_size
-        assert size%batch_size == 0
-         
+        assert size % batch_size == 0
+
         if self.off_load_to_disk:
             if not os.path.exists(self.cache_path):
                 os.makedirs(self.cache_path)
                 self._initialize_data_on_disk()
         else:
-            self.data = torch.zeros((self.size//self.batch_size, self.batch_size, self.seqlen, self.hidden_size), dtype=self.dtype)
+            self.data = torch.zeros(
+                (self.size//self.batch_size, self.batch_size, self.seqlen, self.hidden_size), dtype=self.dtype)
 
     def _initialize_data_on_disk(self):
         for idx in range(self.size//self.batch_size):
-            tensor = torch.zeros((self.batch_size, self.seqlen, self.hidden_size), dtype=self.dtype)
+            tensor = torch.zeros(
+                (self.batch_size, self.seqlen, self.hidden_size), dtype=self.dtype)
             filepath = self._get_file_path(idx)
             torch.save(tensor, filepath)
 

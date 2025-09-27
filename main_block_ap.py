@@ -26,14 +26,15 @@ def evaluate(model, tokenizer, args, logger):
     please activate '--real_quant'.
     '''
     # import pdb;pdb.set_trace()
-    block_class_name = model.model.layers[0].__class__.__name__
-    device_map = infer_auto_device_map(model, max_memory={i: args.max_memory for i in range(
-        torch.cuda.device_count())}, no_split_module_classes=[block_class_name])
-    model = dispatch_model(model, device_map=device_map)
+    # The model is already on the correct devices, so we don't need to dispatch it again.
+    # block_class_name = model.model.layers[0].__class__.__name__
+    # device_map = infer_auto_device_map(model, max_memory={i: args.max_memory for i in range(
+    #     torch.cuda.device_count())}, no_split_module_classes=[block_class_name])
+    # model = dispatch_model(model, device_map=device_map)
     results = {}
 
     if args.eval_ppl:
-        datasets = ["wikitext2", "c4"]
+        datasets = ["wikitext2"]
         ppl_results = test_ppl(model, tokenizer, datasets, args.ppl_seqlen)
         for dataset in ppl_results:
             logger.info(f'{dataset} perplexity: {ppl_results[dataset]:.2f}')
