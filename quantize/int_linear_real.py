@@ -64,7 +64,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         self.register_buffer(
             'g_idx',
             torch.tensor(
-                [i // self.group_size for i in range(infeatures)], dtype=torch.int32)
+                [i // self.group_size for i in range(infeatures)], dtype=torch.int32).cuda()
         )   # not used, just for consistent with GPTQ models
         if bias:
             self.register_buffer('bias', torch.zeros(
@@ -179,6 +179,8 @@ class QuantLinear(nn.Module, TritonModuleMixin):
             weight = ((weight.view(-1, self.group_size, dim1) - zeros.view(-1,
                       1, dim1)) * self.scales.view(-1, 1, dim1)).reshape(dim0, dim1)
         # out = torch.matmul(x, weight)
+        if weight.shape[0] != x.shape[-1]:
+            weight = weight.t()
         out = torch.matmul(x, weight.to(x.dtype))
         out = out + self.bias if self.bias is not None else out
         return out
@@ -206,6 +208,7 @@ def load_quantized_model(model_path, wbits, group_size):
     torch.cuda.empty_cache()
     gc.collect()
     model.tie_weights()
+    model.to_empty(device="cuda")
     device_map = infer_auto_device_map(model)
     print("Loading pre-computed quantized weights...")
     load_checkpoint_in_model(model, checkpoint=model_path,

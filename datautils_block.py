@@ -194,6 +194,20 @@ def test_ppl(model, tokenizer, datasets=['wikitext2'], ppl_seqlen=2048):
         use_cache = model.config.use_cache
         model.config.use_cache = False
         model.eval()
+        # Get the device of the first transformer layer.
+        try:
+            # For quantized models
+            device = next(model.model.layers[0].parameters()).device
+        except StopIteration:
+            # For FP16 models
+            device = model.device
+
+        # Move all necessary components to the determined device.
+        model.model.embed_tokens.to(device)
+        if hasattr(model.model, 'rotary_emb'):
+            model.model.rotary_emb.to(device)
+        if hasattr(model.model, 'norm'):
+            model.model.norm.to(device)
         nlls = []
         if hasattr(model, 'lm_head') and isinstance(model.lm_head, nn.Linear):
             classifier = model.lm_head
@@ -208,9 +222,9 @@ def test_ppl(model, tokenizer, datasets=['wikitext2'], ppl_seqlen=2048):
         for i in tqdm(range(nsamples)):
             batch = testenc[:, (i * seqlen): ((i + 1) * seqlen)
                             ].to(model.model.embed_tokens.weight.device)
-            outputs = model.model(batch)
+            outputs = model(batch)
             if classifier is not None:
-                hidden_states = outputs[0]
+                hidden_states = outputs[0].view(-1, outputs[0].shape[-1])
                 logits = classifier(hidden_states.to(classifier.weight.dtype))
             else:
                 logits = outputs[0]
