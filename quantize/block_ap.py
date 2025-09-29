@@ -272,7 +272,7 @@ def block_ap(
 
             if args.weight_lr > 0:
                 set_weight_parameters(qlayer, True)
-                if args.adaptive_lr_scaling and args.layer_ordering == 'sensitivity':
+                if args.adaptive_lr_scaling and args.layer_ordering == 'sensitivity' and not args.no_adaptive_lr:
                     min_s, max_s = torch.min(
                         sensitivity_scores), torch.max(sensitivity_scores)
                     normalized_sensitivity = 0.5 + \
