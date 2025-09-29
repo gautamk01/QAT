@@ -223,15 +223,13 @@ def test_ppl(model, tokenizer, datasets=['wikitext2'], ppl_seqlen=2048):
             batch = testenc[:, (i * seqlen): ((i + 1) * seqlen)
                             ].to(model.model.embed_tokens.weight.device)
             outputs = model(batch)
-            if classifier is not None:
-                hidden_states = outputs[0].view(-1, outputs[0].shape[-1])
-                logits = classifier(hidden_states.to(classifier.weight.dtype))
-            else:
-                logits = outputs[0]
-            shift_logits = logits[:, :-1, :]
+            logits = outputs[0]
+            shift_logits = logits[:, :-1, :].contiguous()
             shift_labels = testenc[:, (i * seqlen): ((i + 1) * seqlen)][
                 :, 1:
             ].to(shift_logits.device)
+            print(f"shift_logits shape: {shift_logits.shape}")
+            print(f"shift_labels shape: {shift_labels.shape}")
             loss_fct = nn.CrossEntropyLoss()
             loss = loss_fct(
                 shift_logits.view(-1, shift_logits.size(-1)),

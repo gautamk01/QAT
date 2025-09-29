@@ -259,8 +259,8 @@ def block_ap(
                 quant_train_inps_k) * args.epochs
             if args.quant_lr > 0:
                 set_quant_parameters(qlayer, True)
-                param.append({"params": quant_parameters(
-                    qlayer), "lr": args.quant_lr})
+                param.append({"params": list(quant_parameters(
+                    qlayer)), "lr": args.quant_lr})
                 empty_optimizer_1 = torch.optim.AdamW(
                     [torch.tensor(0)], lr=args.quant_lr)
                 quant_scheduler = CosineAnnealingLR(
@@ -285,8 +285,8 @@ def block_ap(
                         f"Block {block_index} sensitivity: {sensitivity_scores[block_index]:.4f}, LR scale: {lr_scale_factor:.2f}, Scaled LR: {scaled_weight_lr:.2e}")
                 else:
                     scaled_weight_lr = args.weight_lr
-                param.append({"params": weight_parameters(
-                    qlayer), "lr": scaled_weight_lr})
+                param.append({"params": list(weight_parameters(
+                    qlayer)), "lr": scaled_weight_lr})
                 empty_optimizer_2 = torch.optim.AdamW(
                     [torch.tensor(0)], lr=scaled_weight_lr)
                 weight_scheduler = CosineAnnealingLR(

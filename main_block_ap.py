@@ -35,6 +35,10 @@ def evaluate(model, tokenizer, args, logger):
 
     if args.eval_ppl:
         datasets = ["wikitext2"]
+        logger.info(f"Tokenizer vocab size: {len(tokenizer)}")
+        if hasattr(model, 'lm_head'):
+            logger.info(
+                f"Model lm_head output features: {model.lm_head.out_features}")
         ppl_results = test_ppl(model, tokenizer, datasets, args.ppl_seqlen)
         for dataset in ppl_results:
             logger.info(f'{dataset} perplexity: {ppl_results[dataset]:.2f}')
@@ -161,6 +165,9 @@ def main():
             args.model, use_fast=False, legacy=False)
         model = AutoModelForCausalLM.from_pretrained(
             args.model, config=config, device_map='cpu', torch_dtype=torch.float16)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        model.resize_token_embeddings(len(tokenizer))
         for param in model.parameters():
             param.requires_grad = False
 
