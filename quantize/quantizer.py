@@ -38,23 +38,21 @@ class UniformAffineQuantizer(nn.Module):
         self.enable = True
 
         # init scale and zero point through Max-Min quantization
-        self.scale = None
-        self.zero_point = None
-        if weight is not None:
-            self.init_quant_params(weight)
+        with torch.no_grad():
+            if weight is not None:
+                x = weight.reshape(-1, self.group_size)
+                xmin = x.amin([-1], keepdim=True)
+                xmax = x.amax([-1], keepdim=True)
+                range = xmax - xmin
+                scale = range / (2**self.n_bits - 1)
+                scale = scale.clamp(min=1e-4, max=1e4)
+                zero_point = -(xmin / scale).clamp(min=-1e4, max=1e4)
+                self.scale = nn.Parameter(scale)
+                self.zero_point = nn.Parameter(zero_point.round())
 
     def init_quant_params(self, weight: torch.Tensor):
-        with torch.no_grad():
-            x = weight.reshape(-1, self.group_size)
-            xmin = x.amin([-1], keepdim=True)
-            xmax = x.amax([-1], keepdim=True)
-            range = xmax - xmin
-            # Add epsilon for numerical stability
-            scale = range / (2**self.n_bits - 1)
-            scale = scale.clamp(min=1e-8)  # Use a small epsilon
-            zero_point = -(xmin / scale).clamp(min=-1e4, max=1e4)
-            self.scale = nn.Parameter(scale)
-            self.zero_point = nn.Parameter(zero_point.round())
+        # This method is kept for compatibility but initialization is done in __init__
+        pass
 
     def change_n_bits(self, n_bits):
         self.n_bits = n_bits

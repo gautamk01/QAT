@@ -1,4 +1,4 @@
-# This file is modified from https://github.com/artidoro/qlora/blob/main/qlora.py 
+# This file is modified from https://github.com/artidoro/qlora/blob/main/qlora.py
 import json
 import os
 from os.path import exists, join, isdir
@@ -7,6 +7,7 @@ from typing import Optional, Dict
 import numpy as np
 import importlib
 from packaging import version
+import warnings
 
 import torch
 import transformers
@@ -28,7 +29,6 @@ from pathlib import Path
 
 
 
-
 def is_ipex_available():
     def get_major_and_minor_from_version(full_version):
         return str(version.parse(full_version).major) + "." + str(version.parse(full_version).minor)
@@ -45,14 +45,14 @@ def is_ipex_available():
     ipex_major_and_minor = get_major_and_minor_from_version(_ipex_version)
     if torch_major_and_minor != ipex_major_and_minor:
         warnings.warn(
-            f"Intel Extension for PyTorch {ipex_major_and_minor} needs to work with PyTorch {ipex_major_and_minor}.*,"
+            f"Intel Extension for PyTorch {_ipex_version} needs to work with PyTorch {_ipex_major_and_minor}.*",
             f" but PyTorch {_torch_version} is found. Please switch to the matching version and run again."
         )
         return False
     return True
-    
 
-if torch.cuda.is_available():   
+
+if torch.cuda.is_available():
     torch.backends.cuda.matmul.allow_tf32 = True
 
 
@@ -226,16 +226,15 @@ class GenerationArguments:
     no_repeat_ngram_size: Optional[int] = field(default=0)
 
 
-
 def get_accelerate_model(args, checkpoint_dir):
 
     if torch.cuda.is_available():
         n_gpus = torch.cuda.device_count()
     if is_ipex_available() and torch.xpu.is_available():
         n_gpus = torch.xpu.device_count()
-        
+
     max_memory = f'{args.max_memory_MB}MB'
-    max_memory = {i: max_memory for i in range(n_gpus)}
+    max_memory = {'i': max_memory for i in range(n_gpus)}
     device_map = "auto"
 
     # if we are in a distributed setting, we need to set the device map and max memory per device
@@ -245,12 +244,12 @@ def get_accelerate_model(args, checkpoint_dir):
         max_memory = {'': max_memory[local_rank]}
 
 
-    
+
     model, tokenizer = load_quantized_model(args.quant_model_path,args.wbits, args.group_size)
     tokenizer.model_max_length = args.pt_context_len
     model.config.max_position_embeddings = args.pt_context_len
-    
-    compute_dtype = (torch.float16 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32))        
+
+    compute_dtype = (torch.float16 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32))
     if compute_dtype == torch.float16 and (is_ipex_available() and torch.xpu.is_available()):
         compute_dtype = torch.bfloat16
         print('Intel XPU does not support float16 yet, so switching to bfloat16')
@@ -263,13 +262,13 @@ def get_accelerate_model(args, checkpoint_dir):
     # model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=args.gradient_checkpointing)
     model.cuda()
     model.train()
-        
+
     if tokenizer._pad_token is None:
         smart_tokenizer_and_embedding_resize(
             special_tokens_dict=dict(pad_token=DEFAULT_PAD_TOKEN),
             tokenizer=tokenizer,
             model=model,
-        )    
+        )
 
     # TODO
     # if 'llama1' in args.model_name_or_path or 'llama2' in args.model_name_or_path or 'llama-1' in args.model_name_or_path or 'llama-2' in args.model_name_or_path:
@@ -297,15 +296,15 @@ def get_accelerate_model(args, checkpoint_dir):
     for param in model.parameters():
         if (param.dtype == torch.float16) or (param.dtype == torch.bfloat16):
             param.data = param.data.to(torch.float32)
-            
+
     if args.gradient_checkpointing:
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
         else:
             def make_inputs_require_grad(module, input, output):
                 output.requires_grad_(True)
-            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)    
-            
+            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+
         model.gradient_checkpointing_enable()
 
     for name, module in model.named_modules():
@@ -354,7 +353,7 @@ def smart_tokenizer_and_embedding_resize(
     """
     num_new_tokens = tokenizer.add_special_tokens(special_tokens_dict)
     model.resize_token_embeddings(len(tokenizer))
-    
+
     if num_new_tokens > 0:
         input_embeddings_data = model.get_input_embeddings().weight.data
         output_embeddings_data = model.get_output_embeddings().weight.data
@@ -364,9 +363,6 @@ def smart_tokenizer_and_embedding_resize(
 
         input_embeddings_data[-num_new_tokens:] = input_embeddings_avg
         output_embeddings_data[-num_new_tokens:] = output_embeddings_avg
-
-
-
 
 
 
@@ -385,7 +381,7 @@ def get_last_checkpoint(checkpoint_dir):
     return None, False # first training
 
 def train():
-    hfparser = transformers.HfArgumentParser((
+    hfparser = transformers.HfArgumentParser(( 
         ModelArguments, DataArguments, TrainingArguments, GenerationArguments
     ))
     model_args, data_args, training_args, generation_args, extra_args = \
@@ -398,7 +394,7 @@ def train():
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     logger = utils.create_logger(args.output_dir)
     logger.info(args)
-    
+
     checkpoint_dir, completed_training = get_last_checkpoint(args.output_dir)
     if completed_training:
         print('Detected that training was already completed!')
@@ -411,7 +407,7 @@ def train():
 
     data_module = make_data_module(tokenizer=tokenizer, args=args)
 
-    
+
 
     optimizer_grouped_parameters = []
     for name, module in model.named_modules():
@@ -438,7 +434,7 @@ def train():
                 trainer.log(results)
 
         trainer.add_callback(PPLvalCallback)
-    
+
     # Verifying the datatypes and parameter counts before training.
     print_trainable_parameters(args, model)
     dtypes = {}
@@ -517,7 +513,7 @@ def train():
         logger.info(f'Average Acc: {total_acc/len(task_list)*100:.2f}%')
 
     if args.do_mmlu_eval:
-        lm_eval_model = HFLM(pretrained=model, batch_size=16)
+        lm_eval_model = HFLM(pretrained=model, batch_size=1) # Reduced batch size to prevent OOM
         task_manager = lm_eval.tasks.TaskManager()
         results = lm_eval.simple_evaluate( # call simple_evaluate
         model=lm_eval_model,

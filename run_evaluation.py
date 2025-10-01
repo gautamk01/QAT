@@ -9,6 +9,7 @@ if project_path not in sys.path:
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from quantize.int_linear_fake import QuantLinear
 from main_block_ap import evaluate
 import utils
 import argparse

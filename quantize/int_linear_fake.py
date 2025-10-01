@@ -34,7 +34,8 @@ class QuantLinear(nn.Module):
         self.use_temporary_parameter = False
 
     def init_quant_params(self):
-        self.weight_quantizer.init_quant_params(self.weight)
+        # Quantization parameters are already initialized in __init__
+        pass
 
     def forward(self, input: torch.Tensor):
         if self.use_weight_quant:
